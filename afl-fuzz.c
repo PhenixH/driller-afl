@@ -59,20 +59,19 @@
 #  include <sys/sysctl.h>
 #endif /* __APPLE__ || __FreeBSD__ || __OpenBSD__ */
 
+
 /* Lots of globals, but mostly for the status UI and other things where it
    really makes no sense to haul them around as function parameters. */
 
 static u8 *in_dir,                    /* Input directory with test cases  */
           *out_file,                  /* File to fuzz, if any             */
           *out_dir,                   /* Working & output directory       */
-          *driller_path,              /* Location of driller executable   */
           *sync_dir,                  /* Synchronization directory        */
           *sync_id,                   /* Fuzzer ID                        */
           *use_banner,                /* Display banner                   */
           *in_bitmap,                 /* Input bitmap                     */
           *doc_path,                  /* Path to documentation dir        */
           *target_path,               /* Path to target binary            */
-          *target_binary_path,        /* Path to target binary, not qemu  */
           *orig_cmdline;              /* Original command line            */
 
 static u32 exec_tmout = EXEC_TIMEOUT; /* Configurable exec timeout (ms)   */
@@ -154,8 +153,7 @@ static u64 total_crashes,             /* Total number of crashes          */
            bytes_trim_in,             /* Bytes coming into the trimmer    */
            bytes_trim_out,            /* Bytes coming outa the trimmer    */
            blocks_eff_total,          /* Blocks subject to effector maps  */
-           blocks_eff_select,         /* Blocks selected as fuzzable      */
-           driller_invokations;       /* Number of driller invokations    */
+           blocks_eff_select;         /* Blocks selected as fuzzable      */
 
 static u32 subseq_hangs;              /* Number of hangs in a row         */
 
@@ -534,7 +532,7 @@ static void mark_as_det_done(struct queue_entry* q) {
   fn = alloc_printf("%s/queue/.state/deterministic_done/%s", out_dir, fn + 1);
 
   fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
-  //if (fd < 0) PFATAL("Unable to create '%s'", fn);
+  if (fd < 0) PFATAL("Unable to create '%s'", fn);
   close(fd);
 
   ck_free(fn);
@@ -557,7 +555,7 @@ static void mark_as_variable(struct queue_entry* q) {
   if (symlink(ldest, fn)) {
 
     s32 fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
-    //if (fd < 0) PFATAL("Unable to create '%s'", fn);
+    if (fd < 0) PFATAL("Unable to create '%s'", fn);
     close(fd);
 
   }
@@ -588,7 +586,7 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
   if (state) {
 
     fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
-    //if (fd < 0) PFATAL("Unable to create '%s'", fn);
+    if (fd < 0) PFATAL("Unable to create '%s'", fn);
     close(fd);
 
   } else {
@@ -1244,7 +1242,7 @@ static void setup_post(void) {
 /* Read all testcases from the input directory, then queue them for testing.
    Called at startup. */
 
-static void read_testcases(char *in_dir) {
+static void read_testcases(void) {
 
   struct dirent **nl;
   s32 nl_cnt;
@@ -1281,10 +1279,6 @@ static void read_testcases(char *in_dir) {
   for (i = 0; i < nl_cnt; i++) {
 
     struct stat st;
-
-    /* jump over driller's traced catalogue */
-    if (!strcmp(nl[i]->d_name, ".traced"))
-        continue;
 
     u8* fn = alloc_printf("%s/%s", in_dir, nl[i]->d_name);
     u8* dfn = alloc_printf("%s/.state/deterministic_done/%s", in_dir, nl[i]->d_name);
@@ -2271,9 +2265,7 @@ static u8 run_target(char** argv) {
 
   if (WIFSIGNALED(status) && !stop_soon) {
     kill_signal = WTERMSIG(status);
-    /* SIGUSR1 signifies the detection of a leak */
-    if ((kill_signal == SIGSEGV) || (kill_signal == SIGILL) || (kill_signal == SIGUSR1))
-        return FAULT_CRASH;
+    return FAULT_CRASH;
   }
 
   /* A somewhat nasty hack for MSAN, which doesn't support abort_on_error and
@@ -2694,7 +2686,7 @@ static void perform_dry_run(char** argv) {
 
 static void link_or_copy(u8* old_path, u8* new_path) {
 
-  s32 i = 1; //link(old_path, new_path);
+  s32 i = link(old_path, new_path);
   s32 sfd, dfd;
   u8* tmp;
 
@@ -2704,7 +2696,7 @@ static void link_or_copy(u8* old_path, u8* new_path) {
   if (sfd < 0) PFATAL("Unable to open '%s'", old_path);
 
   dfd = open(new_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
-  if (dfd < 0) { close(sfd); return; } // PFATAL("Unable to create '%s'", new_path);
+  if (dfd < 0) PFATAL("Unable to create '%s'", new_path);
 
   tmp = ck_alloc(64 * 1024);
 
@@ -3699,7 +3691,7 @@ static void show_stats(void) {
 
   sprintf(tmp + banner_pad, "%s " cLCY VERSION cLGN
           " (%s)",  crash_mode ? cPIN "peruvian were-rabbit" : 
-          cYEL "american fuzzy lop " cLBL "(w/ driller)", use_banner);
+          cYEL "american fuzzy lop", use_banner);
 
   SAYF("\n%s\n\n", tmp);
 
@@ -3956,8 +3948,6 @@ static void show_stats(void) {
        "  variable : %s%-10s " bSTG bV "\n", tmp, queued_variable ? cLRD : cNOR,
       no_var_check ? (u8*)"n/a" : DI(queued_variable));
 
-
-
   if (!bytes_trim_out) {
 
     sprintf(tmp, "n/a, ");
@@ -3989,14 +3979,8 @@ static void show_stats(void) {
 
   }
 
-  //SAYF(bV bSTOP "        trim : " cNOR "%-37s " bSTG bVR bH20 bH2 bH2 bRB "\n"
-  //     bLB bH30 bH20 bH2 bH bRB bSTOP cRST RESET_G1, tmp);
-
-
-  sprintf(tmp, "%s", DI(driller_invokations));
-  SAYF(bV bSTOP "     driller : " cNOR "%-37s " bSTG bVR bH20 bH2 bH2 bRB "\n"
+  SAYF(bV bSTOP "        trim : " cNOR "%-37s " bSTG bVR bH20 bH2 bH2 bRB "\n"
        bLB bH30 bH20 bH2 bH bRB bSTOP cRST RESET_G1, tmp);
-
 
   /* Provide some CPU utilization stats. */
 
@@ -6300,12 +6284,6 @@ static void sync_fuzzers(char** argv) {
 
     if (sd_ent->d_name[0] == '.' || !strcmp(sync_id, sd_ent->d_name)) continue;
 
-    u8 *driller_dir = alloc_printf("%s_driller", sync_id);
-    u8 ret = strcmp(driller_dir, sd_ent->d_name);
-    ck_free(driller_dir);
-
-    if (!ret) continue;
-
     /* Skip anything that doesn't have a queue/ subdirectory. */
 
     qd_path = alloc_printf("%s/%s/queue", sync_dir, sd_ent->d_name);
@@ -6540,10 +6518,7 @@ static void check_binary(u8* fname) {
 #ifndef __APPLE__
 
   if (f_data[0] != 0x7f || memcmp(f_data + 1, "ELF", 3))
-  {
-    if (f_data[0] != 0x7f || memcmp(f_data + 1, "CGC", 3))
-        FATAL("Program '%s' is not an ELF or CGC binary", target_path);
-  }
+    FATAL("Program '%s' is not an ELF binary", target_path);
 
 #else
 
@@ -6679,10 +6654,6 @@ static void usage(u8* argv0) {
        "  -d            - quick & dirty mode (skips deterministic steps)\n"
        "  -n            - fuzz without instrumentation (dumb mode)\n"
        "  -x dir        - optional fuzzer dictionary (see README)\n\n"
-
-       "Driller options:\n\n"
-
-       "  -D file       - path to the drill script\n"
 
        "Other stuff:\n\n"
 
@@ -7194,8 +7165,8 @@ static void setup_signal_handlers(void) {
 
 static char** get_qemu_argv(u8* own_loc, char** argv, int argc) {
 
-  char** new_argv = ck_alloc(sizeof(char*) * (argc + 5));
-  u8 *tmp, *cp, *rsl, *own_copy, *qemu_name, *bpath;
+  char** new_argv = ck_alloc(sizeof(char*) * (argc + 4));
+  u8 *tmp, *cp, *rsl, *own_copy;
 
   memcpy(new_argv + 3, argv + 1, sizeof(char*) * argc);
 
@@ -7206,11 +7177,9 @@ static char** get_qemu_argv(u8* own_loc, char** argv, int argc) {
 
   tmp = getenv("AFL_PATH");
 
-  qemu_name = "afl-qemu-trace";
-
   if (tmp) {
 
-    cp = alloc_printf("%s/%s", tmp, qemu_name);
+    cp = alloc_printf("%s/afl-qemu-trace", tmp);
 
     if (access(cp, X_OK))
       FATAL("Unable to find '%s'", tmp);
@@ -7227,8 +7196,7 @@ static char** get_qemu_argv(u8* own_loc, char** argv, int argc) {
 
     *rsl = 0;
 
-    cp = alloc_printf("%s/%s", own_copy, qemu_name);
-
+    cp = alloc_printf("%s/afl-qemu-trace", own_copy);
     ck_free(own_copy);
 
     if (!access(cp, X_OK)) {
@@ -7240,11 +7208,9 @@ static char** get_qemu_argv(u8* own_loc, char** argv, int argc) {
 
   } else ck_free(own_copy);
 
-  bpath = alloc_printf("%s/%s", BIN_PATH, qemu_name);
-  if (!access(bpath, X_OK)) {
+  if (!access(BIN_PATH "/afl-qemu-trace", X_OK)) {
 
-    target_path = new_argv[0] = ck_strdup(bpath);
-    ck_free(bpath);
+    target_path = new_argv[0] = ck_strdup(BIN_PATH "/afl-qemu-trace");
     return new_argv;
 
   }
@@ -7291,42 +7257,6 @@ static void save_cmdline(u32 argc, char** argv) {
 
 }
 
-/* Functions for driller */
-void invoke_driller(char **use_argv)
-{
-    pid_t driller_pid;
-    int status; 
-    char *argv[9];
-
-    SAYF(cYEL "[!]" cRST " driller being invoked!\n");
-
-    argv[0]  = driller_path;
-    argv[1]  = "-b";
-    argv[2]  = target_binary_path;
-    argv[3]  = "-i";
-    argv[4]  = alloc_printf("%s/queue", out_dir);
-    argv[5]  = "-f";
-    argv[6] = alloc_printf("%s/fuzz_bitmap", out_dir); 
-    argv[7] = NULL;
-
-
-    driller_pid = fork();
-    if (driller_pid == 0)
-    {
-        execve(driller_path, argv, environ);
-        exit(1); 
-    }
-
-    if (driller_pid < 0)
-    {
-        perror("failed to invoke driller");
-    }  
-
-    if (waitpid(driller_pid, &status, 0) < 0)
-    {
-        perror("failed to wait for driller process");
-    } 
-}
 
 /* Main entry point */
 
@@ -7344,7 +7274,7 @@ int main(int argc, char** argv) {
 
   doc_path = access(DOC_PATH, F_OK) ? "docs" : DOC_PATH;
 
-  while ((opt = getopt(argc, argv, "+i:o:D:Ef:m:t:T:dnCB:S:M:x:Q")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
 
     switch (opt) {
 
@@ -7361,12 +7291,6 @@ int main(int argc, char** argv) {
 
         if (out_dir) FATAL("Multiple -o options not supported");
         out_dir = optarg;
-        break;
-
-      case 'D': /* driller */
-
-        if (driller_path) FATAL("Multiple -D options not supported");
-        driller_path = optarg;
         break;
 
       case 'M':
@@ -7546,7 +7470,7 @@ int main(int argc, char** argv) {
   setup_shm();
 
   setup_dirs_fds();
-  read_testcases(in_dir);
+  read_testcases();
   load_auto();
 
   pivot_inputs();
@@ -7563,7 +7487,6 @@ int main(int argc, char** argv) {
 
   start_time = get_cur_time();
 
-  target_binary_path = argv[optind];
   if (qemu_mode)
     use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind);
   else
@@ -7633,20 +7556,6 @@ int main(int argc, char** argv) {
     }
 
     skipped_fuzz = fuzz_one(use_argv);
-
-    /* when AFL goes blue we invoke driller */
-    if (cycles_wo_finds > 0 && unique_crashes == 0 && !force_deterministic && driller_path)
-    {
-        if (sync_id)
-            sync_fuzzers(use_argv); /* try to sync fuzzers first */
-
-        /* still didn't find anything interesting after a sync, invoke driller */
-        if (cycles_wo_finds > 0)
-        {
-            invoke_driller(use_argv);
-            cycles_wo_finds = 0;
-        }
-    } 
 
     if (!stop_soon && sync_id && !skipped_fuzz) {
       
